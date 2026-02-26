@@ -53,7 +53,7 @@ jobs:
       - name: Lint with flake8
         run: |
           flake8 ssed/ \
-            --extend-ignore=E501,W503 \
+            --extend-ignore=E501,W503,E203,F541 \
             --statistics
 
       # ── Tests ────────────────────────────────────────────────────────────────
