@@ -200,68 +200,95 @@ def score_articles_with_openai(
     model: str = "gpt-4.1-nano",
 ) -> list[ArticleSentiment]:
     """
-    Score article sentiment using OpenAI.
-    Uses nano model for cost-effective bulk scoring.
+    Score article sentiment using OpenAI in a single batched call.
+
+    All articles are sent in one prompt; the model returns a JSON array
+    with one scored object per article.  This replaces the old per-article
+    loop (N API calls → 1 API call), cutting latency and cost proportionally.
+    Falls back to heuristic scoring if OpenAI is unavailable or the response
+    cannot be parsed.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        # Return heuristic scores for demo
         return _score_articles_heuristic(articles)
 
     from openai import OpenAI
 
     client = OpenAI()
-    scored = []
 
-    for article in articles:
-        text = f"Title: {article['title']}\n"
+    # Build a numbered list of articles to include in a single prompt.
+    articles_text = ""
+    for i, article in enumerate(articles, start=1):
+        line = f"[{i}] Title: {article['title']}"
         if article.get("description"):
-            text += f"Description: {article['description']}\n"
+            line += f" | {article['description']}"
         if article.get("content"):
-            text += f"Content: {article['content'][:300]}\n"
+            line += f" | {article['content'][:200]}"
+        articles_text += line + "\n"
 
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a financial analyst scoring news sentiment. "
-                            "Return ONLY valid JSON with these fields:\n"
-                            '{"sentiment_score": float (-1.0 to 1.0), '
-                            '"relevance": "high/medium/low", '
-                            '"novel_themes": ["theme1", ...]}\n'
-                            "novel_themes: concepts that represent NEW market categories "
-                            "or asset classes (e.g., 'AI infrastructure', 'GPU shortage', "
-                            "'AI-native companies'). Only include genuinely novel themes."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Event context: {event_context}\n\n"
-                            f"Score this article:\n{text}"
-                        ),
-                    },
-                ],
-                response_format={"type": "json_object"},
-            )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a financial analyst scoring news sentiment. "
+                        "You will receive a numbered list of articles. "
+                        "Return ONLY a valid JSON array — one object per article in order — "
+                        "where each object has exactly these fields:\n"
+                        '  "sentiment_score": float from -1.0 (very negative) to 1.0 (very positive),\n'
+                        '  "relevance": one of "high", "medium", or "low",\n'
+                        '  "novel_themes": list of strings naming NEW market categories or asset classes\n'
+                        "    (e.g. 'AI infrastructure', 'GPU shortage', 'AI-native companies').\n"
+                        "    Only include genuinely novel themes — omit this list if none exist.\n"
+                        "The array must contain exactly as many objects as there are articles.\n"
+                        "Do not wrap the array in any outer object."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Event context: {event_context}\n\n"
+                        f"Score all {len(articles)} articles below:\n\n"
+                        f"{articles_text}"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
 
-            result = json.loads(response.choices[0].message.content)
-            scored.append(ArticleSentiment(
-                title=article["title"],
-                source=article.get("source", "Unknown"),
-                published_at=article.get("published_at", ""),
-                sentiment_score=float(result.get("sentiment_score", 0)),
-                relevance=result.get("relevance", "medium"),
-                novel_themes=result.get("novel_themes", []),
-            ))
-        except Exception as e:
-            # On error, fall back to heuristic for this article
-            scored.append(_score_single_heuristic(article))
+        raw = json.loads(response.choices[0].message.content)
 
-    return scored
+        # The model may wrap the array under a key (e.g. {"articles": [...]})
+        # even when asked not to. Find the array regardless of wrapper.
+        if isinstance(raw, list):
+            results = raw
+        else:
+            # Look for the first list value in the response dict
+            results = next((v for v in raw.values() if isinstance(v, list)), [])
+
+        scored = []
+        for i, article in enumerate(articles):
+            if i < len(results) and isinstance(results[i], dict):
+                r = results[i]
+                scored.append(ArticleSentiment(
+                    title=article["title"],
+                    source=article.get("source", "Unknown"),
+                    published_at=article.get("published_at", ""),
+                    sentiment_score=float(r.get("sentiment_score", 0)),
+                    relevance=r.get("relevance", "medium"),
+                    novel_themes=r.get("novel_themes", []),
+                ))
+            else:
+                # Article missing from response — fall back to heuristic for it
+                scored.append(_score_single_heuristic(article))
+
+        return scored
+
+    except Exception:
+        # Full batch failed — fall back to heuristic for all articles
+        return _score_articles_heuristic(articles)
 
 
 def _score_articles_heuristic(articles: list[dict]) -> list[ArticleSentiment]:

@@ -15,7 +15,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from ssed.quant_signals import (
     run_quant_signals,
@@ -531,7 +531,6 @@ def analyze_event(
     if verbose:
         print(f"\n[Layer 3] Requesting structured classification...")
 
-    # Build a classification prompt from the conversation so far
     messages.append({
         "role": "user",
         "content": (
@@ -543,22 +542,31 @@ def analyze_event(
         ),
     })
 
-    schema = RegimeClassification.model_json_schema()
-    messages[-1]["content"] += (
-        "\n\nRespond with ONLY a JSON object matching this schema:\n"
-        f"{json.dumps(schema, indent=2)}\n\n"
-        "Valid classification values: regime_shift, sample_space_expansion, mean_reversion, inconclusive\n"
-        "Valid confidence values: high, medium, low"
-    )
-
-    classification_response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
-
-    raw = json.loads(classification_response.choices[0].message.content)
-    result = RegimeClassification.model_validate(raw)
+    # Use client.beta.chat.completions.parse() for true Pydantic structured output.
+    # This sends the JSON schema to the API and guarantees field names/types match
+    # RegimeClassification — no manual json.loads + model_validate needed.
+    try:
+        classification_response = client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            response_format=RegimeClassification,
+        )
+        result = classification_response.choices[0].message.parsed
+        if result is None:
+            raise ValidationError("parse() returned None — model refused to produce output")
+    except (ValidationError, Exception) as exc:
+        if verbose:
+            print(f"[Layer 3] Structured output failed: {exc}")
+        result = RegimeClassification(
+            classification=RegimeType.INCONCLUSIVE,
+            confidence=ConfidenceLevel.LOW,
+            reasoning=f"Classification could not be produced: {exc}",
+            key_evidence=["Structured output parsing failed — see reasoning for details."],
+            entropy_interpretation="unavailable",
+            divergence_interpretation="unavailable",
+            hmm_interpretation="unavailable",
+            what_changed="unknown — classification error",
+        )
 
     if verbose:
         print(f"\n{'='*60}")

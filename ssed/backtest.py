@@ -83,12 +83,16 @@ def run_backtest(
     long_cols = [t for t in long_tickers if t in norm_prices.columns]
     long_portfolio = norm_prices[long_cols].mean(axis=1)
 
-    # Short leg: profit when price drops
-    # Short P&L = 1 - (price / entry_price)
-    # If CHGG drops 90%, short profit = 0.90 per dollar
+    # Short leg: profit when price drops.
+    # A short position started at $1 earns 1 - norm_price per dollar short.
+    # Total short account value = initial stake (1.0) + unrealised P&L:
+    #   short_value = 1.0 + (1.0 - norm_price)
+    #              = 2.0 - norm_price          ← algebraically identical to the old line,
+    #   but capped at 0.0 to reflect a margin-call / maximum-loss scenario
+    #   (a short can never produce a value below zero in a realistic account).
     short_cols = [t for t in short_tickers if t in norm_prices.columns]
-    short_returns = norm_prices[short_cols].mean(axis=1)
-    short_portfolio = 2.0 - short_returns  # short profit: starts at 1, goes up as price drops
+    norm_short = norm_prices[short_cols].mean(axis=1)
+    short_portfolio = (1.0 + (1.0 - norm_short)).clip(lower=0.0)
 
     # Combined: 50% long, 50% short (dollar-neutral)
     portfolio = (long_portfolio * 0.5 + short_portfolio * 0.5)
