@@ -1,0 +1,128 @@
+# SSED Continuous Integration
+#
+# Runs on every push and pull request targeting main.
+# Three gates must pass before a merge is considered safe:
+#   1. Lint   — flake8 style check on the ssed/ package
+#   2. Test   — pytest smoke tests (no API keys required)
+#   3. Secrets — grep scan to block accidental key commits
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      # Pulls the full repo into the runner's workspace so all subsequent
+      # steps can access the source files.
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Python 3.11 ─────────────────────────────────────────────────────────
+      # Pins the interpreter to the same minor version used in development.
+      # `cache: pip` reuses downloaded wheels across runs, cutting install time.
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── Runtime dependencies ─────────────────────────────────────────────────
+      # Installs everything in requirements.txt (streamlit, openai, hmmlearn …).
+      # flake8 is a dev-only tool so it's installed separately to keep
+      # requirements.txt clean.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install flake8
+        run: pip install flake8
+
+      # ── Lint ─────────────────────────────────────────────────────────────────
+      # E501 (line too long) and W503 (line break before binary operator) are
+      # both ignored — E501 because the codebase has intentionally long strings
+      # (prompts, SQL-like expressions), W503 because it conflicts with Black's
+      # preferred style.
+      # `--statistics` prints a summary of error codes found, useful for triage.
+      - name: Lint with flake8
+        run: |
+          flake8 ssed/ \
+            --extend-ignore=E501,W503 \
+            --statistics
+
+      # ── Tests ────────────────────────────────────────────────────────────────
+      # Runs pytest with short tracebacks.  All API keys are explicitly blanked
+      # so any test that accidentally calls an external service fails fast with
+      # an authentication error rather than a confusing network timeout.
+      # The `if [ -d tests ]` guard means this step stays green even on branches
+      # where the tests/ folder doesn't exist yet.
+      - name: Run tests
+        run: |
+          if [ -d tests ]; then
+            pytest tests/ --tb=short
+          else
+            echo "No tests/ directory found — skipping pytest"
+          fi
+        env:
+          OPENAI_API_KEY: ""
+          NEWSAPI_KEY: ""
+          FINANCIAL_DATASETS_API_KEY: ""
+
+      # ── Secret scan ──────────────────────────────────────────────────────────
+      # Three patterns are checked:
+      #
+      #   1. OpenAI keys  — `sk-` followed by 20+ alphanumeric chars.
+      #      Real keys look like `sk-proj-AbCdEf…` or `sk-AbCdEf…`.
+      #      The placeholder in .env.example (`sk-your-key-here`) does NOT
+      #      match because the suffix contains hyphens, not pure alnum chars.
+      #
+      #   2. NewsAPI keys — an un-commented `NEWSAPI_KEY=` assignment whose
+      #      value is 10+ alphanumeric chars (not a hyphenated placeholder).
+      #
+      #   3. Bearer tokens — a string literal `"Bearer <token>"` with 20+
+      #      alnum/dot/hyphen chars; scoped to Python source only.
+      #
+      # The .git and .github directories are excluded so the workflow file
+      # itself (which contains these pattern strings) is never scanned.
+      - name: Check for hardcoded API keys
+        run: |
+          echo "Scanning for hardcoded secrets..."
+          FOUND=0
+
+          if grep -rn \
+               --include="*.py" --include="*.toml" --include="*.json" \
+               -E 'sk-[A-Za-z0-9]{20,}' \
+               --exclude-dir='.git' --exclude-dir='.github' \
+               .; then
+            echo "ERROR: Possible hardcoded OpenAI key detected above."
+            FOUND=1
+          fi
+
+          if grep -rn \
+               --include="*.py" --include="*.env" \
+               -E '^NEWSAPI_KEY=[A-Za-z0-9]{10,}' \
+               --exclude-dir='.git' \
+               .; then
+            echo "ERROR: Possible hardcoded NewsAPI key detected above."
+            FOUND=1
+          fi
+
+          if grep -rn \
+               --include="*.py" \
+               -E '"Bearer [A-Za-z0-9._-]{20,}"' \
+               --exclude-dir='.git' \
+               .; then
+            echo "ERROR: Possible hardcoded Bearer token detected above."
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            exit 1
+          fi
+          echo "No hardcoded secrets detected."
