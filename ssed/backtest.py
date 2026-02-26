@@ -15,9 +15,6 @@ Strategy:
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional
-
 from ssed.quant_signals import fetch_prices
 
 

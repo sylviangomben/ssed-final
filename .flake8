@@ -1,0 +1,22 @@
+[flake8]
+# Codes ignored project-wide
+extend-ignore =
+    # E501 — line too long: long prompt strings are intentional
+    E501,
+    # W503 — line break before binary operator: conflicts with Black style
+    W503,
+    # E203 — whitespace before ':': Black-compatible slice notation
+    E203,
+    # F541 — f-string without placeholders: print() calls and CSS blocks
+    #         use f-strings as a consistent pattern even when no vars present
+    F541,
+
+# Per-file ignores for pre-existing patterns in large files
+per-file-ignores =
+    # dashboard.py inserts the project root into sys.path before importing
+    # ssed.*  — E402 (import not at top) is unavoidable there.
+    # F401 unused imports and E302/F841 are pre-existing style issues in the
+    # large Streamlit file that are out of scope for the current sprint.
+    ssed/dashboard.py: E402, F401, E302, F841
+    # quant_signals.py carries one unused scipy import from an earlier draft
+    ssed/quant_signals.py: F401

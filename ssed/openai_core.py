@@ -11,14 +11,12 @@ Pattern: Chat Completions + tools (strict: True) + structured output (Pydantic)
 import json
 import os
 from enum import Enum
-from typing import Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from ssed.quant_signals import (
-    run_quant_signals,
     compute_hmm_signals,
     compute_entropy_signals,
     compute_divergence_signals,
