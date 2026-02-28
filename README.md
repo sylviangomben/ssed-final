@@ -9,6 +9,18 @@ MGMT 69000 — Mastering AI for Finance | Purdue University
 
 ---
 
+## Submission Deliverables
+
+| Deliverable | Link |
+|-------------|------|
+| Live Streamlit App | [sylviangomben-used.streamlit.app](https://sylviangomben-used.streamlit.app) |
+| AI Operator Log (DRIVER framework) | [AI_LOG.md](https://github.com/sylviangomben/ssed-final/blob/main/AI_LOG.md) |
+| Validation Report (8/8 checks passed) | [VALIDATION_REPORT.md](https://github.com/sylviangomben/ssed-final/blob/main/VALIDATION_REPORT.md) |
+| Substack Post | *(coming soon)* |
+| Slides | *(coming soon)* |
+
+---
+
 ## The Problem
 
 Traditional regime detection tools like Hidden Markov Models (HMMs) catch probability shifts within a known investment universe — what we call **P changes**. But they completely miss when the investment universe *itself* changes — when new asset classes emerge and old ones die. We call this **X changes**, or **sample space expansion**.
