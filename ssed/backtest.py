@@ -48,6 +48,7 @@ class BacktestResult:
     start_date: str
     end_date: str
     trading_days: int
+    transaction_cost_pct: float  # one-way cost per leg (e.g. 0.001 = 10bps)
 
 
 def run_backtest(
@@ -57,6 +58,7 @@ def run_backtest(
     start_date: str = "2022-11-30",
     end_date: str = "2024-12-01",
     initial_capital: float = 100.0,
+    transaction_cost_pct: float = 0.001,  # 10bps one-way per leg (realistic for institutional)
 ) -> BacktestResult:
     """
     Run long-short portfolio backtest.
@@ -94,10 +96,13 @@ def run_backtest(
     # Combined: 50% long, 50% short (dollar-neutral)
     portfolio = (long_portfolio * 0.5 + short_portfolio * 0.5)
 
-    # Scale to initial capital
-    portfolio_values = portfolio * initial_capital
-    long_values = long_portfolio * initial_capital
-    short_values = short_portfolio * initial_capital
+    # Apply one-time entry transaction cost (one-way per leg at inception).
+    # Both the long and short legs incur execution costs when entered,
+    # so effective starting capital is reduced by 2 × tc.
+    after_cost = 1.0 - 2 * transaction_cost_pct
+    portfolio_values = portfolio * initial_capital * after_cost
+    long_values = long_portfolio * initial_capital * (1.0 - transaction_cost_pct)
+    short_values = short_portfolio * initial_capital * (1.0 - transaction_cost_pct)
     benchmark_values = norm_prices[benchmark] * initial_capital if benchmark in norm_prices.columns else None
 
     # Performance metrics
@@ -146,6 +151,7 @@ def run_backtest(
         start_date=start_date,
         end_date=end_date,
         trading_days=len(prices),
+        transaction_cost_pct=transaction_cost_pct,
     )
 
 

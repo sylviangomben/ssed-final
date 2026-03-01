@@ -7,10 +7,20 @@ entropy, divergence, and momentum metrics.
 
 import numpy as np
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ssed.quant_signals import fetch_prices
+
+
+def _fetch_stocks_for_sector(args: tuple) -> tuple[str, pd.DataFrame]:
+    """Worker: fetch price data for one sector's stocks. Used by ThreadPoolExecutor."""
+    sector, stocks, start_date, end_date = args
+    try:
+        return sector, fetch_prices(stocks, start_date, end_date)
+    except Exception:
+        return sector, pd.DataFrame()
 
 
 # Sector ETFs representing S&P 500 sectors
@@ -86,6 +96,18 @@ def scan_sectors(
     if etf_prices.empty:
         return []
 
+    # Pre-fetch all sector stock data in parallel (replaces 11 sequential calls)
+    fetch_args = [
+        (sector, stocks, start_date, end_date)
+        for sector, stocks in SECTOR_STOCKS.items()
+    ]
+    sector_stock_cache: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_fetch_stocks_for_sector, args): args[0] for args in fetch_args}
+        for future in as_completed(futures):
+            sector_name, df = future.result()
+            sector_stock_cache[sector_name] = df
+
     signals = []
 
     for sector, etf in SECTOR_ETFS.items():
@@ -114,23 +136,20 @@ def scan_sectors(
         long_ret = (prices.iloc[-1] / prices.iloc[-lookback_days] - 1) if len(prices) > lookback_days else 0
         momentum_score = float(short_ret - long_ret / (lookback_days / momentum_short)) if long_ret != 0 else 0
 
-        # Divergence: fetch top stocks in sector
-        stocks = SECTOR_STOCKS.get(sector, [])
+        # Divergence: use pre-fetched sector stock data
+        stock_prices = sector_stock_cache.get(sector, pd.DataFrame())
         divergence_score = 0.0
-        if stocks:
+        if not stock_prices.empty:
             try:
-                stock_prices = fetch_prices(stocks, start_date, end_date)
-                if not stock_prices.empty:
-                    stock_returns = {}
-                    for s in stocks:
-                        if s in stock_prices.columns:
-                            sp = stock_prices[s].dropna()
-                            if len(sp) > lookback_days:
-                                stock_returns[s] = (sp.iloc[-1] / sp.iloc[-lookback_days] - 1) * 100
-
-                    if stock_returns:
-                        vals = list(stock_returns.values())
-                        divergence_score = max(vals) - min(vals)
+                stock_returns = {}
+                for s in SECTOR_STOCKS.get(sector, []):
+                    if s in stock_prices.columns:
+                        sp = stock_prices[s].dropna()
+                        if len(sp) > lookback_days:
+                            stock_returns[s] = (sp.iloc[-1] / sp.iloc[-lookback_days] - 1) * 100
+                if stock_returns:
+                    vals = list(stock_returns.values())
+                    divergence_score = max(vals) - min(vals)
             except Exception:
                 pass
 

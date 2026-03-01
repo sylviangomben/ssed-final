@@ -1147,6 +1147,70 @@ if st.session_state.get("running"):
         df_trans = pd.DataFrame(transmat, index=labels, columns=labels)
         st.dataframe(df_trans.style.format("{:.3f}").background_gradient(cmap="YlOrRd"), use_container_width=True)
 
+    # ── Expansion Signal Evolution (time-series) ──────────────
+    st.markdown(
+        f'<p style="font-size:0.85rem; font-weight:600; color:{C["text_bright"]}; margin:16px 0 4px;">Expansion Signal Evolution</p>',
+        unsafe_allow_html=True,
+    )
+    if ent.rolling_dates and ent.rolling_entropy and quant.hmm.regime_history:
+        import numpy as _np
+        exp_dates = pd.to_datetime(ent.rolling_dates)
+        ent_arr = _np.array(ent.rolling_entropy)
+
+        # Normalise entropy to 0-1 (inverted: lower entropy = higher concentration signal)
+        ent_min, ent_max = ent_arr.min(), ent_arr.max()
+        inv_ent = 1.0 - (ent_arr - ent_min) / (ent_max - ent_min + 1e-9)
+
+        # Align HMM regime history to the entropy rolling window
+        regime_numeric = _np.array([
+            {"low_volatility": 0.0, "medium_volatility": 0.5, "high_volatility": 1.0}.get(r, 0.5)
+            for r in quant.hmm.regime_history
+        ])
+        n = len(inv_ent)
+        regime_aligned = regime_numeric[-n:] if len(regime_numeric) >= n else _np.pad(
+            regime_numeric, (n - len(regime_numeric), 0), constant_values=0.5
+        )
+
+        # Composite: 60% entropy concentration + 40% HMM volatility regime
+        expansion_ts = 0.6 * inv_ent + 0.4 * regime_aligned
+
+        fig_exp = go.Figure()
+        fig_exp.add_trace(go.Scatter(
+            x=exp_dates,
+            y=expansion_ts,
+            name="Expansion Signal",
+            line=dict(color=C["red"], width=2),
+            fill="tozeroy",
+            fillcolor="rgba(255,82,82,0.07)",
+            hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Score: %{y:.3f}<extra></extra>",
+        ))
+        # Mark the event date
+        event_dt = pd.to_datetime(event_date_str)
+        if exp_dates.min() <= event_dt <= exp_dates.max():
+            fig_exp.add_shape(
+                type="line",
+                x0=event_dt.isoformat(), x1=event_dt.isoformat(),
+                y0=0, y1=1, yref="paper",
+                line=dict(dash="dot", color=C["yellow"], width=1.5),
+            )
+            fig_exp.add_annotation(
+                x=event_dt.isoformat(), y=0.97, yref="paper",
+                text=event_name, showarrow=False,
+                font=dict(color=C["yellow"], size=10),
+                xanchor="left", xshift=6,
+            )
+        fig_exp.update_layout(
+            **CHART_LAYOUT,
+            yaxis_title="Composite Expansion Score (0–1)",
+            height=280,
+        )
+        fig_exp.update_yaxes(range=[0, 1.1])
+        st.plotly_chart(fig_exp, use_container_width=True)
+        st.caption(
+            "Composite of entropy concentration (60 %) + HMM volatility regime (40 %). "
+            "Rising score = signals converging toward sample space expansion."
+        )
+
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # --------------------------------------------------------

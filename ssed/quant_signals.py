@@ -321,7 +321,8 @@ def compute_concentration_signals(
 # FULL PIPELINE
 # ============================================================
 
-# Approximate S&P 500 sector weights (public data)
+# Documented sector weight snapshots (public S&P 500 data).
+# Used as fallbacks and interpolation anchors by fetch_sector_weights().
 SP500_WEIGHTS_NOV_2022 = {
     "Technology": 0.20, "Healthcare": 0.15, "Financials": 0.12,
     "Consumer Discretionary": 0.10, "Communication Services": 0.08,
@@ -335,6 +336,65 @@ SP500_WEIGHTS_NOV_2024 = {
     "Industrials": 0.08, "Consumer Staples": 0.06, "Energy": 0.04,
     "Utilities": 0.03, "Materials": 0.02, "Real Estate": 0.02, "Other": 0.06,
 }
+
+# SPDR sector ETFs used to estimate live sector weights via AUM
+_SECTOR_WEIGHT_ETFS = {
+    "Technology": "XLK", "Healthcare": "XLV", "Financials": "XLF",
+    "Consumer Discretionary": "XLY", "Communication Services": "XLC",
+    "Industrials": "XLI", "Consumer Staples": "XLP", "Energy": "XLE",
+    "Utilities": "XLU", "Materials": "XLB", "Real Estate": "XLRE",
+}
+
+_WEIGHT_SNAPSHOTS = {
+    pd.Timestamp("2022-11-30"): SP500_WEIGHTS_NOV_2022,
+    pd.Timestamp("2024-12-01"): SP500_WEIGHTS_NOV_2024,
+}
+
+
+def fetch_sector_weights(as_of_date: str) -> dict:
+    """
+    Return approximate S&P 500 sector weights for a given date.
+
+    Strategy (in order):
+      1. Recent dates (within 90 days of today): fetch live ETF total assets
+         from yfinance and normalise across the 11 SPDR sector ETFs.
+      2. Historical dates: linearly interpolate between the two documented
+         snapshots (Nov 2022, Dec 2024).
+      3. Any failure: fall back to the nearest snapshot.
+    """
+    target = pd.Timestamp(as_of_date)
+    today = pd.Timestamp.now().normalize()
+    snap_ts = sorted(_WEIGHT_SNAPSHOTS.keys())
+
+    # ── 1. Live fetch for recent dates ───────────────────────
+    if (today - target).days <= 90:
+        try:
+            aum = {}
+            for sector, etf in _SECTOR_WEIGHT_ETFS.items():
+                info = yf.Ticker(etf).info
+                assets = info.get("totalAssets", 0)
+                if assets and assets > 0:
+                    aum[sector] = float(assets)
+            if len(aum) >= 8:
+                total = sum(aum.values())
+                print(f"  [sector weights] Live AUM fetched for {len(aum)} sectors")
+                return {s: round(v / total, 4) for s, v in aum.items()}
+        except Exception as e:
+            print(f"  [sector weights] Live fetch failed ({e}), falling back to interpolation")
+
+    # ── 2. Interpolate between snapshots ────────────────────
+    if target <= snap_ts[0]:
+        return _WEIGHT_SNAPSHOTS[snap_ts[0]]
+    if target >= snap_ts[-1]:
+        return _WEIGHT_SNAPSHOTS[snap_ts[-1]]
+
+    t0, t1 = snap_ts[0], snap_ts[-1]
+    frac = (target - t0) / (t1 - t0)
+    w0, w1 = _WEIGHT_SNAPSHOTS[t0], _WEIGHT_SNAPSHOTS[t1]
+    all_sectors = set(w0) | set(w1)
+    blended = {s: w0.get(s, 0) * (1 - frac) + w1.get(s, 0) * frac for s in all_sectors}
+    total = sum(blended.values())
+    return {s: round(v / total, 4) for s, v in blended.items()} if total > 0 else w0
 
 
 def run_quant_signals(
@@ -373,9 +433,9 @@ def run_quant_signals(
     print(f"    {loser}: {divergence_signals.loser_return_pct:+.1f}%")
 
     print(f"[Layer 1] Computing concentration (HHI)...")
-    concentration_signals = compute_concentration_signals(
-        SP500_WEIGHTS_NOV_2022, SP500_WEIGHTS_NOV_2024
-    )
+    weights_before = fetch_sector_weights(event_date)
+    weights_after = fetch_sector_weights(analysis_end)
+    concentration_signals = compute_concentration_signals(weights_before, weights_after)
     print(f"  HHI change: {concentration_signals.hhi_change:+.6f}")
 
     return QuantSignals(
