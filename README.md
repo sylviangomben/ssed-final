@@ -9,7 +9,7 @@ MGMT 69000 — Mastering AI for Finance | Purdue University
 
 ---
 
-## Submission Deliverables
+## Project Artifacts
 
 | Deliverable | Link |
 |-------------|------|
