@@ -17,7 +17,7 @@ MGMT 69000 — Mastering AI for Finance | Purdue University
 | AI Operator Log (DRIVER framework) | [AI_LOG.md](https://github.com/sylviangomben/ssed-final/blob/main/AI_LOG.md) |
 | Validation Report (8/8 checks passed) | [VALIDATION_REPORT.md](https://github.com/sylviangomben/ssed-final/blob/main/VALIDATION_REPORT.md) |
 | Substack Post | [substack.com/home/post/p-189488220](https://substack.com/home/post/p-189488220) |
-| Slides | *(coming soon)* |
+| Slides | [SSED_Presentation_v2-2.pptx](https://purdue0-my.sharepoint.com/:p:/r/personal/cngomben_purdue_edu/Documents/SSED_Presentation_v2-2.pptx?d=w9c599df9a9d64b00b1fdd186e874b6d6&csf=1&web=1&e=hg6VPn) |
 
 ---
 
