@@ -16,7 +16,7 @@ MGMT 69000 — Mastering AI for Finance | Purdue University
 | Live Streamlit App | [sylviangomben-used.streamlit.app](https://sylviangomben-used.streamlit.app) |
 | AI Operator Log (DRIVER framework) | [AI_LOG.md](https://github.com/sylviangomben/ssed-final/blob/main/AI_LOG.md) |
 | Validation Report (8/8 checks passed) | [VALIDATION_REPORT.md](https://github.com/sylviangomben/ssed-final/blob/main/VALIDATION_REPORT.md) |
-| Substack Post | *(coming soon)* |
+| Substack Post | [substack.com/home/post/p-189488220](https://substack.com/home/post/p-189488220) |
 | Slides | *(coming soon)* |
 
 ---
