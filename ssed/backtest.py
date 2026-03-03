@@ -288,7 +288,7 @@ def run_forward_looking_backtest(
             short_vals[date] = short_nav * short_mult
 
         # Carry forward the ending NAV to the next segment
-        if seg_dates.any():
+        if len(seg_dates) > 0:
             portfolio_nav = pf_values[seg_dates[-1]]
 
     pf_series = pd.Series(pf_values)
