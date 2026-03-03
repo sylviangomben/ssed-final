@@ -1,15 +1,17 @@
 """
 SSED Long-Short Portfolio Backtest
 
-Professor's feedback: "Build the long-short portfolio: go long winners
-(NVDA, MSFT) and short losers (CHGG) post-ChatGPT, then backtest performance."
+Two strategies:
 
-Strategy:
-  - Long: NVDA, MSFT (AI infrastructure winners)
-  - Short: CHGG (disrupted education)
-  - Equal weight within each leg
-  - Rebalance: buy-and-hold (no rebalancing) to show raw creative destruction
-  - Benchmark: SPY (passive market exposure)
+1. run_backtest() — illustrated hindsight backtest.
+   Tickers are selected by the analyst knowing the outcome (NVDA won, CHGG lost).
+   Useful for illustrating the thesis, but NOT a valid test of predictive power.
+
+2. run_forward_looking_backtest() — bias-free walk-forward backtest.
+   At each monthly rebalance date T, stocks are ranked by trailing returns using
+   ONLY data available at T. The system selects long/short legs — no future
+   knowledge. This is the honest test: can the system detect expansion signals
+   before you know the answer?
 """
 
 import numpy as np
@@ -152,6 +154,189 @@ def run_backtest(
         end_date=end_date,
         trading_days=len(prices),
         transaction_cost_pct=transaction_cost_pct,
+    )
+
+
+@dataclass
+class ForwardLookingBacktestResult:
+    """Walk-forward backtest: no look-forward bias in ticker selection."""
+    portfolio_values: pd.Series
+    long_values: pd.Series
+    short_values: pd.Series
+    benchmark_values: pd.Series
+
+    total_return_pct: float
+    annualized_return_pct: float
+    benchmark_return_pct: float
+    alpha_pct: float
+    sharpe_ratio: float
+    max_drawdown_pct: float
+    volatility_pct: float
+
+    rebalance_count: int
+    universe: list
+    start_date: str
+    end_date: str
+    trading_days: int
+    transaction_cost_pct: float
+    note: str
+
+
+# Default universe: the 12 stocks that appear across the 6 preset scenarios
+_DEFAULT_UNIVERSE = [
+    "NVDA", "MSFT", "AAPL", "META", "AMZN",
+    "NFLX", "TSLA", "CHGG", "NOK", "F", "IBM", "DIS",
+]
+
+
+def run_forward_looking_backtest(
+    universe: list = None,
+    benchmark: str = "SPY",
+    start_date: str = "2022-11-30",
+    end_date: str = "2024-12-01",
+    lookback_days: int = 60,   # trailing window for momentum signal
+    rebalance_days: int = 21,  # ~monthly
+    long_n: int = 2,
+    short_n: int = 1,
+    initial_capital: float = 100.0,
+    transaction_cost_pct: float = 0.001,
+) -> ForwardLookingBacktestResult:
+    """
+    Walk-forward long-short backtest with no look-forward bias.
+
+    At each rebalance date T:
+      - Rank universe stocks by trailing `lookback_days` return using ONLY data < T
+      - Go long top `long_n`, short bottom `short_n`
+      - Hold `rebalance_days` trading days, then repeat
+
+    Ticker selection is made by the system at each T — not by the analyst in
+    hindsight. This tests whether trailing divergence signals (the same signals
+    SSED detects) predict forward returns.
+    """
+    if universe is None:
+        universe = _DEFAULT_UNIVERSE
+
+    all_tickers = list(set(universe + [benchmark]))
+
+    # Fetch extra lookback buffer so the first rebalance has enough history
+    buffer_start = (
+        pd.Timestamp(start_date) - pd.DateOffset(days=lookback_days * 2)
+    ).strftime("%Y-%m-%d")
+    prices = fetch_prices(all_tickers, buffer_start, end_date)
+
+    available = [t for t in universe if t in prices.columns]
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date)
+    trading_dates = prices.index[(prices.index >= start_ts) & (prices.index <= end_ts)]
+
+    if len(trading_dates) < rebalance_days * 2:
+        raise ValueError("Insufficient trading days for walk-forward backtest")
+
+    # Build rebalance schedule: indices into trading_dates
+    rebal_indices = list(range(0, len(trading_dates), rebalance_days))
+
+    pf_values = {}
+    long_vals = {}
+    short_vals = {}
+
+    portfolio_nav = initial_capital
+    current_long: list = []
+    current_short: list = []
+
+    for seg_num, seg_start_i in enumerate(rebal_indices):
+        seg_end_i = rebal_indices[seg_num + 1] if seg_num + 1 < len(rebal_indices) else len(trading_dates)
+        seg_dates = trading_dates[seg_start_i:seg_end_i]
+        rebal_date = trading_dates[seg_start_i]
+
+        # Select tickers using ONLY data strictly before rebal_date
+        past = prices.loc[prices.index < rebal_date, available]
+        if len(past) >= lookback_days:
+            trailing = (past.iloc[-1] / past.iloc[-lookback_days] - 1).dropna()
+            trailing = trailing.sort_values(ascending=False)
+            current_long = list(trailing.head(long_n).index)
+            current_short = [t for t in trailing.tail(short_n).index if t not in current_long]
+
+        # Apply one-time transaction cost at entry
+        seg_nav = portfolio_nav * (1 - 2 * transaction_cost_pct)
+        long_nav = seg_nav / 2
+        short_nav = seg_nav / 2
+
+        # Day-by-day values for this segment (normalized to rebal_date prices)
+        seg_prices = prices.loc[seg_dates]
+        entry_prices = prices.loc[rebal_date]
+
+        for date in seg_dates:
+            # Long leg
+            long_mults = [
+                seg_prices.loc[date, t] / entry_prices[t]
+                for t in current_long
+                if t in seg_prices.columns and entry_prices.get(t, 0) > 0
+            ]
+            long_mult = float(np.mean(long_mults)) if long_mults else 1.0
+
+            # Short leg (profit when price drops)
+            short_mults = [
+                seg_prices.loc[date, t] / entry_prices[t]
+                for t in current_short
+                if t in seg_prices.columns and entry_prices.get(t, 0) > 0
+            ]
+            short_raw = float(np.mean(short_mults)) if short_mults else 1.0
+            short_mult = max(0.0, 2.0 - short_raw)
+
+            pf_values[date] = long_nav * long_mult + short_nav * short_mult
+            long_vals[date] = long_nav * long_mult
+            short_vals[date] = short_nav * short_mult
+
+        # Carry forward the ending NAV to the next segment
+        if seg_dates.any():
+            portfolio_nav = pf_values[seg_dates[-1]]
+
+    pf_series = pd.Series(pf_values)
+    long_series = pd.Series(long_vals)
+    short_series = pd.Series(short_vals)
+
+    bench_series = None
+    if benchmark in prices.columns:
+        bench_prices = prices.loc[trading_dates, benchmark]
+        bench_series = bench_prices * (initial_capital / bench_prices.iloc[0])
+
+    # Performance metrics
+    total_return = (pf_series.iloc[-1] / pf_series.iloc[0] - 1) * 100
+    days = (trading_dates[-1] - trading_dates[0]).days
+    years = max(days / 365.25, 0.01)
+    annualized = ((pf_series.iloc[-1] / pf_series.iloc[0]) ** (1 / years) - 1) * 100
+    bench_return = (bench_series.iloc[-1] / bench_series.iloc[0] - 1) * 100 if bench_series is not None else 0.0
+
+    daily_returns = pf_series.pct_change().dropna()
+    rf_daily = 0.045 / 252
+    excess = daily_returns - rf_daily
+    sharpe = (excess.mean() / excess.std()) * np.sqrt(252) if excess.std() > 0 else 0.0
+    max_dd = ((pf_series - pf_series.cummax()) / pf_series.cummax()).min() * 100
+    vol = daily_returns.std() * np.sqrt(252) * 100
+
+    return ForwardLookingBacktestResult(
+        portfolio_values=pf_series,
+        long_values=long_series,
+        short_values=short_series,
+        benchmark_values=bench_series,
+        total_return_pct=round(float(total_return), 2),
+        annualized_return_pct=round(float(annualized), 2),
+        benchmark_return_pct=round(float(bench_return), 2),
+        alpha_pct=round(float(total_return - bench_return), 2),
+        sharpe_ratio=round(float(sharpe), 2),
+        max_drawdown_pct=round(float(max_dd), 2),
+        volatility_pct=round(float(vol), 2),
+        rebalance_count=len(rebal_indices),
+        universe=available,
+        start_date=start_date,
+        end_date=end_date,
+        trading_days=len(trading_dates),
+        transaction_cost_pct=transaction_cost_pct,
+        note=(
+            f"Walk-forward: {lookback_days}-day trailing momentum ranking, "
+            f"~{rebalance_days}-day rebalance, {long_n} long / {short_n} short. "
+            "No look-forward bias — ticker selection made at each T using only data available at T."
+        ),
     )
 
 

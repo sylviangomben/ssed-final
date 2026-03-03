@@ -23,7 +23,7 @@ load_dotenv()
 
 SEC_USER_AGENT = "SSED Research ssed@example.com"
 
-# CIK lookup for common tickers
+# Fast-path cache for common tickers (avoids a network fetch in the happy path)
 TICKER_TO_CIK = {
     "NVDA": "0001045810",
     "MSFT": "0000789019",
@@ -34,6 +34,46 @@ TICKER_TO_CIK = {
     "CHGG": "0001364954",
     "TSLA": "0001318605",
 }
+
+# Runtime cache populated on first dynamic lookup (~2 MB JSON, rarely changes)
+_cik_cache: dict = {}
+
+
+def resolve_cik(ticker: str) -> str:
+    """
+    Resolve a ticker symbol to its SEC EDGAR CIK.
+
+    Lookup order:
+      1. Hardcoded TICKER_TO_CIK dict (instant)
+      2. In-memory _cik_cache (populated on first dynamic fetch)
+      3. Fetch https://www.sec.gov/files/company_tickers.json and cache it
+
+    This removes the hard ceiling of the original 8-ticker hardcoded dict —
+    any publicly traded company can now be looked up dynamically.
+    """
+    ticker_upper = ticker.upper()
+
+    if ticker_upper in TICKER_TO_CIK:
+        return TICKER_TO_CIK[ticker_upper]
+
+    if ticker_upper in _cik_cache:
+        return _cik_cache[ticker_upper]
+
+    # Fetch the full EDGAR company tickers map
+    resp = requests.get(
+        "https://www.sec.gov/files/company_tickers.json",
+        headers={"User-Agent": SEC_USER_AGENT},
+        timeout=15,
+    )
+    resp.raise_for_status()
+
+    for entry in resp.json().values():
+        _cik_cache[entry["ticker"]] = str(entry["cik_str"]).zfill(10)
+
+    cik = _cik_cache.get(ticker_upper)
+    if not cik:
+        raise ValueError(f"Ticker {ticker} not found in SEC EDGAR")
+    return cik
 
 
 # ============================================================
@@ -394,9 +434,7 @@ def get_company_filings(
     Get filing metadata from SEC EDGAR submissions API.
     Free, no key needed — just requires User-Agent.
     """
-    cik = TICKER_TO_CIK.get(ticker.upper())
-    if not cik:
-        raise ValueError(f"Unknown ticker: {ticker}. Add CIK to TICKER_TO_CIK dict.")
+    cik = resolve_cik(ticker)
 
     url = f"https://data.sec.gov/submissions/CIK{cik}.json"
     headers = {"User-Agent": SEC_USER_AGENT}

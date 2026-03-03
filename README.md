@@ -71,7 +71,7 @@ SSED uses a three-layer architecture where each layer builds on the previous one
 │  └────────────┘ └──────────┘ └────────────┘ └───────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │  Data Layer                                                  │
-│  financialdatasets.ai (prices) │ NewsAPI (news) │ SEC EDGAR │
+│  yfinance (prices)             │ NewsAPI (news) │ SEC EDGAR │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -201,7 +201,6 @@ Edit `.env` with your keys:
 ```
 OPENAI_API_KEY=sk-...              # Enables Layer 2+3 AI analysis
 NEWSAPI_KEY=...                    # Enables live news feed (free at newsapi.org)
-FINANCIAL_DATASETS_API_KEY=...     # Market price data (financialdatasets.ai)
 ```
 
 ---
@@ -210,8 +209,8 @@ FINANCIAL_DATASETS_API_KEY=...     # Market price data (financialdatasets.ai)
 
 | Mode | API Keys Needed | What Works |
 |------|----------------|------------|
-| **Demo** | `FINANCIAL_DATASETS_API_KEY` | Quant signals, backtest, sector scanner, heuristic classification, multi-event comparison |
-| **OpenAI** | + `OPENAI_API_KEY` | + AI classification (o4-mini), sentiment scoring (GPT-4.1-nano), AI chat, AI narrative summary |
+| **Demo** | None (yfinance is free) | Quant signals, backtest, sector scanner, heuristic classification, multi-event comparison |
+| **OpenAI** | `OPENAI_API_KEY` | + AI classification (o4-mini), sentiment scoring (GPT-4.1-nano), AI chat, AI narrative summary |
 | **Full** | + `NEWSAPI_KEY` | + Live news feed from NewsAPI |
 
 The system gracefully degrades — every AI feature has a heuristic fallback that runs without API keys.
@@ -257,10 +256,10 @@ project2/
 - Queries by keyword + date range
 - Articles are scored for sentiment and scanned for novel theme emergence
 
-### financialdatasets.ai
-- REST API for market data — close prices for any ticker
+### yfinance
+- Open-source Python library for Yahoo Finance market data
 - Used across Layer 1 (quant signals), backtest, and sector scanner
-- Requires API key (`FINANCIAL_DATASETS_API_KEY` in `.env`)
+- No API key required
 
 ### SEC EDGAR
 - Direct API calls to `data.sec.gov/submissions/` for company filing metadata
@@ -312,7 +311,7 @@ The detection signal: **when both statistical measures (entropy anomaly, HMM det
 | **ML** | scikit-learn | Supporting ML utilities |
 | **AI** | OpenAI API | Function calling, structured outputs, sentiment |
 | **Structured Data** | Pydantic | Typed LLM outputs, data validation |
-| **Market Data** | financialdatasets.ai | REST API for price data |
+| **Market Data** | yfinance | Yahoo Finance price data, no API key required |
 | **News** | NewsAPI | Financial news headlines and articles |
 | **Filings** | SEC EDGAR API | Company filing metadata and text |
 | **Config** | python-dotenv | API key management via `.env` |

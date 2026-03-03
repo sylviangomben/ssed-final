@@ -31,6 +31,7 @@ class HMMRegimeState:
     log_likelihood: float  # model fit — deterioration signals novelty
     n_regimes: int
     regime_history: list  # regime labels over time
+    ll_deterioration: Optional[float] = None  # log-likelihood per obs drop post-event vs pre-event; negative = model struggling
 
 
 @dataclass
@@ -183,6 +184,75 @@ def compute_hmm_signals(
     )
 
 
+def compute_hmm_signals_split(
+    prices: pd.Series,
+    event_date: str,
+    n_regimes: int = 3,
+) -> HMMRegimeState:
+    """
+    Fit HMM on pre-event data only; score post-event against the frozen model.
+
+    This removes the look-forward bias in the original compute_hmm_signals():
+    training on the full series lets the model absorb post-event dynamics, which
+    mutes the log-likelihood deterioration that is the actual detection signal.
+
+    The ll_deterioration field (log-likelihood per observation post minus pre) is
+    the real sample space expansion signal: a strongly negative value means the
+    model trained on the old universe is struggling to explain the new one.
+    """
+    returns = prices.pct_change().dropna()
+    event_ts = pd.Timestamp(event_date)
+
+    pre_returns = returns[returns.index < event_ts].values
+    post_returns = returns[returns.index >= event_ts].values
+
+    if len(pre_returns) < 30:
+        # Not enough pre-event data — fall back to full-period fit
+        return compute_hmm_signals(prices, n_regimes)
+
+    # Fit on pre-event only
+    model, pre_states, transmat, log_ll_pre = fit_hmm_regimes(pre_returns, n_regimes)
+
+    # Vol-sorted remap (mirrors fit_hmm_regimes internals)
+    state_vols = [np.sqrt(model.covars_[i][0, 0]) for i in range(n_regimes)]
+    vol_order = np.argsort(state_vols)
+    remap = {old: new for new, old in enumerate(vol_order)}
+
+    # Log-likelihood per observation: pre vs post
+    ll_per_obs_pre = log_ll_pre / len(pre_returns)
+    if len(post_returns) > 0:
+        log_ll_post = model.score(post_returns.reshape(-1, 1))
+        ll_per_obs_post = log_ll_post / len(post_returns)
+        ll_deterioration = ll_per_obs_post - ll_per_obs_pre  # negative = model struggling
+    else:
+        ll_deterioration = 0.0
+
+    # Current regime from post-event states (or last pre-event if no post data)
+    if len(post_returns) > 0:
+        raw_post = model.predict(post_returns.reshape(-1, 1))
+        remapped = np.array([remap[s] for s in raw_post])
+        _, posteriors = model.score_samples(post_returns.reshape(-1, 1))
+    else:
+        remapped = pre_states
+        _, posteriors = model.score_samples(pre_returns.reshape(-1, 1))
+
+    posteriors_remapped = posteriors[:, vol_order]
+    current_regime = int(remapped[-1])
+    regime_prob = float(posteriors_remapped[-1, current_regime])
+    regime_history = [REGIME_LABELS.get(s, f"regime_{s}") for s in remapped]
+
+    return HMMRegimeState(
+        current_regime=current_regime,
+        regime_label=REGIME_LABELS.get(current_regime, f"regime_{current_regime}"),
+        regime_probability=round(regime_prob, 4),
+        transition_matrix=transmat.round(4).tolist(),
+        log_likelihood=round(float(log_ll_pre), 4),
+        n_regimes=n_regimes,
+        regime_history=regime_history,
+        ll_deterioration=round(float(ll_deterioration), 6),
+    )
+
+
 # ============================================================
 # ENTROPY ANALYSIS
 # ============================================================
@@ -227,10 +297,15 @@ def compute_entropy_signals(
 
     current_ent = rolling_ent[-1] if rolling_ent else 0.0
 
-    # Z-score: how unusual is current entropy vs full history
-    ent_arr = np.array(rolling_ent)
-    if ent_arr.std() > 0:
-        zscore = float((current_ent - ent_arr.mean()) / ent_arr.std())
+    # Z-score against pre-event values only — avoids look-forward bias.
+    # Using the full series would include post-event entropy in the mean/std,
+    # making the z-score a function of future data when evaluated at the event date.
+    pre_event_idx = next(
+        (i for i, d in enumerate(rolling_dates) if d >= event_date), len(rolling_dates)
+    )
+    pre_event_ent = np.array(rolling_ent[:pre_event_idx])
+    if len(pre_event_ent) > 1 and pre_event_ent.std() > 0:
+        zscore = float((current_ent - pre_event_ent.mean()) / pre_event_ent.std())
     else:
         zscore = 0.0
 
@@ -418,9 +493,11 @@ def run_quant_signals(
     # Scope analysis to event period
     event_prices = prices[prices.index >= event_date]
 
-    print(f"[Layer 1] Computing HMM regimes on {benchmark}...")
-    hmm_signals = compute_hmm_signals(prices[benchmark], n_regimes=3)
+    print(f"[Layer 1] Computing HMM regimes on {benchmark} (pre-event fit only)...")
+    hmm_signals = compute_hmm_signals_split(prices[benchmark], event_date, n_regimes=3)
     print(f"  Current regime: {hmm_signals.regime_label} (p={hmm_signals.regime_probability})")
+    if hmm_signals.ll_deterioration is not None:
+        print(f"  LL deterioration: {hmm_signals.ll_deterioration:+.6f} (negative = model struggling post-event)")
 
     print(f"[Layer 1] Computing entropy signals on {benchmark}...")
     entropy_signals = compute_entropy_signals(prices[benchmark], event_date)

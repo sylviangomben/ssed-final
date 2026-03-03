@@ -35,7 +35,7 @@ from ssed.quant_signals import (
 from ssed.narrative_signals import (
     compute_news_signals,
 )
-from ssed.backtest import run_backtest
+from ssed.backtest import run_backtest, run_forward_looking_backtest
 from ssed.sector_scanner import scan_sectors, scan_market_movers, SECTOR_ETFS
 
 load_dotenv()
@@ -865,7 +865,6 @@ st.sidebar.markdown("---")
 
 has_openai = bool(os.environ.get("OPENAI_API_KEY"))
 has_newsapi = bool(os.environ.get("NEWSAPI_KEY"))
-has_fds = bool(os.environ.get("FINANCIAL_DATASETS_API_KEY"))
 
 st.sidebar.markdown(f"""
 <div style="font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; color:{C['text_dim']}; margin-bottom:10px;">System Status</div>
@@ -878,9 +877,9 @@ st.sidebar.markdown(f"""
         <div class="{'live-dot' if has_newsapi else 'offline-dot'}"></div>
         NewsAPI
     </div>
-    <div class="hero-badge {'badge-on' if has_fds else 'badge-off'}">
-        <div class="{'live-dot' if has_fds else 'offline-dot'}"></div>
-        financialdatasets.ai
+    <div class="hero-badge badge-on">
+        <div class="live-dot"></div>
+        yfinance
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -910,9 +909,9 @@ st.markdown(f"""
             <div class="{'live-dot' if has_newsapi else 'offline-dot'}"></div>
             NewsAPI
         </div>
-        <div class="hero-badge {'badge-on' if has_fds else 'badge-off'}">
-            <div class="{'live-dot' if has_fds else 'offline-dot'}"></div>
-            financialdatasets.ai
+        <div class="hero-badge badge-on">
+            <div class="live-dot"></div>
+            yfinance
         </div>
         <div class="hero-badge badge-on" style="color:{C['text_dim']}; border-color:{C['card_border']};">
             MGMT 69000 &middot; Purdue University
@@ -1650,6 +1649,98 @@ if st.session_state.get("running"):
         """, unsafe_allow_html=True)
 
     # --------------------------------------------------------
+    # WALK-FORWARD BACKTEST (Bias-Free)
+    # --------------------------------------------------------
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    st.markdown(
+        section_header("🔬", "Walk-Forward Backtest (Bias-Free)", "STRATEGY", "label-quant"),
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Ticker selection made by the system at each rebalance using only data available at T — no hindsight."
+    )
+    st.info(
+        "**Methodology:** At each ~monthly rebalance, stocks in the universe are ranked by "
+        "trailing 60-day return using only data up to that date. The system goes long the "
+        "top 2 and short the bottom 1 — selected algorithmically, not by the analyst knowing "
+        "the outcome. This tests whether trailing divergence signals predict forward returns.",
+        icon="ℹ️",
+    )
+
+    if "bt_fwd" not in st.session_state:
+        with st.spinner("Running walk-forward backtest..."):
+            try:
+                bt_fwd = run_forward_looking_backtest(
+                    start_date=event_date_str,
+                    end_date=analysis_end_str,
+                )
+                st.session_state["bt_fwd"] = bt_fwd
+            except Exception as e:
+                st.session_state["bt_fwd"] = None
+                st.error(f"Walk-forward backtest error: {e}")
+
+    bt_fwd = st.session_state.get("bt_fwd")
+    if bt_fwd is not None:
+        fwd_col1, fwd_col2 = st.columns([2, 1])
+        with fwd_col1:
+            fig_fwd = go.Figure()
+            fig_fwd.add_trace(go.Scatter(
+                x=bt_fwd.portfolio_values.index, y=bt_fwd.portfolio_values.values,
+                name="Walk-Forward Portfolio",
+                line=dict(color=C["accent2"], width=3),
+                fill="tozeroy",
+                fillcolor="rgba(99,102,241,0.06)",
+            ))
+            fig_fwd.add_trace(go.Scatter(
+                x=bt_fwd.long_values.index, y=bt_fwd.long_values.values,
+                name="Long Leg",
+                line=dict(color=C["green"], width=1.5, dash="dot"),
+            ))
+            fig_fwd.add_trace(go.Scatter(
+                x=bt_fwd.short_values.index, y=bt_fwd.short_values.values,
+                name="Short Leg",
+                line=dict(color=C["red"], width=1.5, dash="dot"),
+            ))
+            if bt_fwd.benchmark_values is not None:
+                fig_fwd.add_trace(go.Scatter(
+                    x=bt_fwd.benchmark_values.index, y=bt_fwd.benchmark_values.values,
+                    name="SPY Benchmark",
+                    line=dict(color=C["text_dim"], width=1, dash="dash"),
+                ))
+            fig_fwd.update_layout(
+                paper_bgcolor=C["card"], plot_bgcolor=C["card"],
+                font=dict(color=C["text"], size=11),
+                legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+                margin=dict(l=10, r=10, t=10, b=10),
+                xaxis=dict(gridcolor=C["card_border"]),
+                yaxis=dict(gridcolor=C["card_border"], title="Portfolio Value ($)"),
+                height=300,
+            )
+            st.plotly_chart(fig_fwd, use_container_width=True)
+
+        with fwd_col2:
+            fwd_ret_class = "pos" if bt_fwd.total_return_pct > 0 else "neg"
+            fwd_alpha_class = "pos" if bt_fwd.alpha_pct > 0 else "neg"
+            fwd_sharpe_class = "pos" if bt_fwd.sharpe_ratio > 1 else "neutral"
+            st.markdown(f"""
+            <div class="bloomberg-card">
+                <div class="bloomberg-header">WALK-FORWARD PERFORMANCE</div>
+                <div class="bloomberg-body">
+                    {bloomberg_row("Total Return", f"{bt_fwd.total_return_pct:+.1f}%", fwd_ret_class)}
+                    {bloomberg_row("Alpha vs SPY", f"{bt_fwd.alpha_pct:+.1f}%", fwd_alpha_class)}
+                    {bloomberg_row("Sharpe Ratio", f"{bt_fwd.sharpe_ratio:.2f}", fwd_sharpe_class)}
+                    {bloomberg_row("Max Drawdown", f"{bt_fwd.max_drawdown_pct:.1f}%", "neg")}
+                    {bloomberg_row("Volatility", f"{bt_fwd.volatility_pct:.1f}%", "neutral")}
+                    {bloomberg_row("Rebalances", str(bt_fwd.rebalance_count), "neutral")}
+                    {bloomberg_row("Universe", str(len(bt_fwd.universe)) + " stocks", "neutral")}
+                    {bloomberg_row("Benchmark", f"{bt_fwd.benchmark_return_pct:+.1f}%", "neutral")}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.caption(f"_{bt_fwd.note}_")
+
+    # --------------------------------------------------------
     # THE INSIGHT
     # --------------------------------------------------------
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
@@ -2061,7 +2152,7 @@ FEATURES:
 - App Q&A (this feature): Ask about methodology and how the app works.
 
 DATA SOURCES:
-- Market prices: financialdatasets.ai REST API
+- Market prices: yfinance (Yahoo Finance, no API key required)
 - News: NewsAPI (free tier)
 - SEC filings: EDGAR API
 - AI: OpenAI (o4-mini for classification, GPT-4.1-nano for sentiment/narrative/chat)
